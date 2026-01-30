@@ -1,128 +1,210 @@
-# 🛡️ Paso 1: Infraestructura de Red y Acceso Remoto
+# 🚀 Despliegue de Servicios en Máquina Cliente vía X11 y MobaXterm
 
-El primer objetivo fue establecer una vía de comunicación segura entre el host externo (PC Windows) y el servidor interno privado (`10.10.10.2`) a través del nodo Router.
+### 💻 Escenario de Trabajo
+En esta práctica operamos sobre una arquitectura de red segmentada en **Proxmox**. El flujo de trabajo se divide en tres capas:
+1.  **PC Host (Windows):** Nuestra estación base con **MobaXterm**. Aquí es donde recibimos la señal gráfica y gestionamos el terminal.
+2.  **Router (Ubuntu):** El encargado de gestionar el tráfico mediante IPTables para que la red externa llegue al nodo interno.
+3.  **Cliente (Ubuntu):** Es el núcleo de la práctica (IP `10.10.10.2`). En este nodo es donde se orquestan los **servicios de mensajería** (Postfix y Dovecot) y donde corre la aplicación de usuario **Thunderbird**.
+   
+**Objetivo:** Configurar la Máquina Cliente para que funcione como un nodo de mensajería completo, permitiendo el acceso gráfico remoto y la gestión de identidades corporativas bajo el dominio `cherjo.com`.
 
 ---
+### 🛡️ Paso 1: Túneles y Redirección de Puertos (Infraestructura)
 
-## 1️⃣ Habilitación de X11 Forwarding (MÁQUINA: CLIENTE)
+Lo primero que necesitamos es preparar la infraestructura para que nos deje entrar y, además, permita exportar la interfaz gráfica desde la red privada.
 
-Para poder visualizar la interfaz gráfica de Thunderbird en el PC local, modificamos la configuración del servicio SSH en el servidor de correo.
+#### 1.1 Reglas de IPTables en el Router
+Como la Máquina Cliente está "escondida" en una red privada, el Router debe mapear los puertos para que cuando toquemos su IP, la petición salte directamente al Cliente.
 
 ```bash
-# Comando para editar la configuración de SSH:
-sudo nano /etc/ssh/sshd_config
+# Limpieza de reglas y mapeo de puertos (DNAT)
+sudo iptables -t nat -F
 
-# --- CAMBIOS A REALIZAR DENTRO DEL ARCHIVO ---
-# Asegúrate de que estas líneas no tengan un '#' al principio:
-X11Forwarding yes
-AddressFamily inet
-# ---------------------------------------------
-
-# Reiniciamos el servicio para aplicar los cambios:
-sudo systemctl restart ssh
-```
-2️⃣ Configuración de Redirecciones DNAT (MÁQUINA: ROUTER)
-Puesto que el Servidor de Correo está en una red privada detrás del Router, ejecutamos reglas de iptables para mapear los puertos necesarios hacia la IP interna 10.10.10.2.
-
-```Bash
-# 1. Redirección para el túnel SSH y gestión remota (Puerto 2222 -> 22)
+# Redirigimos SSH (2222), SMTP (25) e IMAP (143) hacia la IP del Cliente 10.10.10.2
 sudo iptables -t nat -A PREROUTING -i ens18 -p tcp --dport 2222 -j DNAT --to-destination 10.10.10.2:22
-
-# 2. Redirección para el protocolo SMTP (Envío de correo - Puerto 25)
 sudo iptables -t nat -A PREROUTING -i ens18 -p tcp --dport 25 -j DNAT --to-destination 10.10.10.2:25
-
-# 3. Redirección para el protocolo IMAP (Recepción de correo - Puerto 143)
 sudo iptables -t nat -A PREROUTING -i ens18 -p tcp --dport 143 -j DNAT --to-destination 10.10.10.2:143
-
-# 4. Enmascaramiento para permitir la salida a Internet del servidor interno
 sudo iptables -t nat -A POSTROUTING -j MASQUERADE
 ```
 
-# 🛠️ Paso 2: Instalación y Configuración de Servicios de Correo
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/524d9074-ca57-468a-baf7-b21169e06f72" width="550">
+  <br><i>Configuración de reglas NAT y redirección de puertos en el Router.</i>
+</div>
 
-Una vez preparada la red, procedemos a instalar el cliente gráfico y configurar los servidores de envío (Postfix) y recepción (Dovecot) en la máquina **CLIENTE**.
+#### 1.2 Configuración de la Máquina Cliente (SSH)
+Con el puerto ya abierto en el Router, configuramos el servicio SSH en el Cliente para que sea capaz de enviar ventanas gráficas a través del túnel.
 
-> **⚠️ NOTA IMPORTANTE:** En la siguiente configuración verás el dominio `cherjo.com`. Este es el nombre que hemos asignado a nuestro proyecto. **Debes sustituir `cherjo.com` por el nombre de dominio que tú hayas elegido** (ej. `miempresa.com`, `proyecto.local`, etc.).
+```bash
+# Entramos a la configuración del servicio SSH
+sudo nano /etc/ssh/sshd_config
+
+# --- AJUSTES TÉCNICOS ---
+# X11Forwarding yes -> Habilita el envío de paquetes gráficos a aplicaciones externas.
+# AddressFamily inet -> Forzamos IPv4 para evitar conflictos de resolución de red.
+# ------------------------
+
+sudo systemctl restart ssh
+```
+
+
+#### 1.3 Acceso desde el PC Local (MobaXterm)
+
+Una vez que el Router tiene las puertas abiertas y el Cliente permite el paso de gráficos, configuramos nuestro terminal en Windows. En **MobaXterm**, creamos una nueva sesión SSH con los siguientes parámetros críticos para que el "salto" sea exitoso:
+
+* **Remote Host:** `192.168.109.53` (IP externa del Router).
+* **Port:** `2222` (El puerto que configuramos en IPTables para que nos redirija internamente a la Máquina Cliente).
+* **Username:** `cliente` (El usuario con el que operaremos en el nodo interno).
+* **X11-Forwarding:** Esta casilla debe estar **marcada**. Es la que permite que, al ejecutar `thunderbird &`, la ventana "viaje" por el túnel SSH y aparezca en nuestro escritorio de Windows.
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <b>⚙️ Configuración de Sesión en MobaXterm</b><br>
+        <img src="https://github.com/user-attachments/assets/5a386371-05eb-45f6-afbe-14e277e3f95d" width="550">
+      </td>
+    </tr>
+  </table>
+</div>
+
+
+> **Nota técnica:** Al conectar por el puerto 2222, el Router recibe el paquete y, gracias a la regla de PREROUTING que definimos antes, lo reenvía de forma transparente al puerto 22 de la Máquina Cliente (`10.10.10.2`).
 
 ---
 
-## 1️⃣ Instalación de Software
-Actualizamos los repositorios e instalamos **Thunderbird** (Cliente de correo) y **xauth** (necesario para que la interfaz gráfica se autorice a través de SSH).
+### 📧 Paso 2: Setup de los Servicios en la Máquina Cliente
+
+Aquí es donde configuramos la lógica de mensajería. Necesitamos que los dos servicios principales (Postfix y Dovecot) se sincronicen perfectamente.
+
+#### 2.1 Postfix (Gestión de envío SMTP)
+Configuramos el MTA para que sepa que él es el responsable de los correos de `cherjo.com`.
 
 ```bash
-sudo apt update
-sudo apt install thunderbird xauth -y
-```
-2️⃣ Configuración de Postfix (SMTP)
-Configuramos el agente de transporte de correo para que acepte correos dirigidos a nuestro dominio y los guarde en formato de carpeta (Maildir/) en lugar de un archivo único.
-
-```Bash
-# Editamos la configuración principal de Postfix:
 sudo nano /etc/postfix/main.cf
 
-# --- CAMBIOS A REALIZAR DENTRO DEL ARCHIVO ---
-# 1. Busca 'mydestination'. Aquí definimos qué correos se queda el servidor.
-# SUSTITUYE 'cherjo.com' por TU DOMINIO:
-mydestination = $myhostname, cherjo.com, localhost.cherjo.com, localhost
+# --- AJUSTES REALIZADOS ---
+# mydestination -> Añadimos el dominio para que el servidor acepte los correos como locales.
+# home_mailbox = Maildir/ -> Cambiamos a formato Maildir para que cada correo sea un archivo.
+# --------------------------
 
-# 2. Añade (o modifica) esta línea al final para usar formato carpeta:
-home_mailbox = Maildir/
-# ---------------------------------------------
-
-# Reiniciamos el servicio para aplicar cambios:
 sudo systemctl restart postfix
 ```
-3️⃣ Configuración de Dovecot (Autenticación)
-Modificamos Dovecot para permitir el inicio de sesión sin cifrado SSL (entorno de laboratorio) y para que gestione correctamente los nombres de usuario con formato de correo completo.
+<div align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <b>⚙️ Configuración de Sesión en MobaXterm</b><br>
+        <img src="https://github.com/user-attachments/assets/11aebd5a-5491-47ac-ae92-ab1bccc2a851" width="550">
+      </td>
+    </tr>
+  </table>
+</div>
 
-```Bash
-# Editamos el archivo de autenticación:
+
+
+
+#### 2.2 Dovecot (Gestión de recepción IMAP)
+Aquí ajustamos la forma en la que el usuario se identifica.
+
+```bash
+# Ajustamos el parseo del nombre de usuario
 sudo nano /etc/dovecot/conf.d/10-auth.conf
+# auth_username_format = %n -> Esto descarta el @dominio y se queda solo con el 'user' local.
 
-# --- CAMBIOS A REALIZAR DENTRO DEL ARCHIVO ---
-# Descomenta y modifica estas líneas:
-
-# %n es CRÍTICO: le dice al sistema que ignore la parte del dominio.
-# Si te logueas como 'usuario@cherjo.com', el sistema solo leerá 'usuario'.
-auth_username_format = %n
-
-# Permite contraseñas en texto plano (necesario porque no configuramos SSL)
-disable_plaintext_auth = no
-# ---------------------------------------------
-```
-4️⃣ Configuración de Dovecot (Buzón)
-Es crítico sincronizar Dovecot para que busque los correos en la misma carpeta donde Postfix los está guardando (~/Maildir).
-
-```Bash
-# Editamos el archivo de ubicación del correo:
+# Ajustamos la ruta de lectura
 sudo nano /etc/dovecot/conf.d/10-mail.conf
+# mail_location = maildir:~/Maildir -> Sincronizamos con la carpeta que usa Postfix.
 
-# --- CAMBIOS A REALIZAR DENTRO DEL ARCHIVO ---
-# Busca la línea mail_location y déjala así (asegúrate de comentar con # la que pone mbox):
-mail_location = maildir:~/Maildir
-# ---------------------------------------------
 
-# Reiniciamos Dovecot para aplicar todos los cambios de configuración:
 sudo systemctl restart dovecot
 ```
-
-# ✉️ Paso 3: Lanzamiento y Configuración de Thunderbird
-
-Finalmente, ejecutamos el cliente de correo y configuramos la cuenta manualmente para que conecte con nuestros servicios internos (Postfix/Dovecot).
-
-> **⚠️ NOTA IMPORTANTE:** En el ejemplo utilizamos el usuario `cherjo` y el dominio `cherjo.com`. **Sustituye estos valores por tu propio usuario y dominio.**
+<div align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <b>⚙️ Configuración de Sesión en MobaXterm</b><br>
+        <img src="https://github.com/user-attachments/assets/1df72ec8-9135-4cdc-a33e-fd52123d2b16" width="550">
+      </td>
+    </tr>
+  </table>
+</div>
 
 ---
 
-## 1️⃣ Ejecución del Cliente
-Lanzamos Thunderbird desde la terminal. Gracias al X11 Forwarding configurado en el Paso 1, la ventana aparecerá en nuestro escritorio.
+### ✉️ Paso 3: Thunderbird y Despliegue Gráfico
+
+Llegó el momento de ver los resultados. Lanzamos Thunderbird desde la Máquina Cliente, pero lo controlamos desde nuestro Windows.
+
+#### 3.1 Lanzamiento X11
+```bash
+# Lanzamos el proceso en background para no bloquear la consola
+thunderbird &
+```
+<div align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <b>⚙️ Configuración de Sesión en MobaXterm</b><br>
+        <img src="https://github.com/user-attachments/assets/a658ba18-a3d5-4139-a8d3-f6c94cd67f9b" width="550">
+      </td>
+    </tr>
+  </table>
+</div>
+
+
+
+> **[CAPTURA: Ventana de Thunderbird renderizada sobre el escritorio de Windows]**
+
+#### 3.2 Configuración de la Cuenta
+Introducimos los parámetros de red. Es vital hacerlo manual para apuntar directamente a las IPs del entorno de laboratorio.
+
+* **Identidad:** `cherjo@cherjo.com`
+* **Incoming (IMAP):** IP `10.10.10.2` | Puerto `143` | SSL `None`
+* **Outgoing (SMTP):** IP `10.10.10.2` | Puerto `25` | SSL `None`
+
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <b></b><br>
+        <img src="https://github.com/user-attachments/assets/524d9074-ca57-468a-baf7-b21169e06f72" width="400">
+      </td>
+      <td align="center">
+        <b></b><br>
+        <img src="https://github.com/user-attachments/assets/2f12eb9a-c953-4d15-9ae6-553d1cc5227a" width="400">
+      </td>
+    </tr>
+  </table>
+</div>
+
+
+
+
+
+
+
+#### 3.3 Fix de Permisos y Sincronización
+Si la bandeja de entrada no carga, es un problema de permisos en el sistema de archivos o de caché del cliente.
 
 ```bash
-# El símbolo '&' permite que la terminal siga operativa
-thunderbird &
-2️⃣ Configuración de Cuenta (GUI)Al abrirse el asistente de configuración, selecciona "Configuración Manual" e introduce los siguientes datos. Es crítico usar la IP interna y el nombre de usuario completo.AjusteValor (Ejemplo)ConfiguraciónNombreCherjo TeamTu nombre o el del equipoCorreocherjo@cherjo.comusuario@tudominio.comContraseña[La del sistema]La contraseña del usuario LinuxProtocolo EntranteIMAPPuerto 143Servidor Entrante10.10.10.2SSL: NoneProtocolo SalienteSMTPPuerto 25Servidor Saliente10.10.10.2SSL: NoneUsuario Entrantecherjo@cherjo.comImportante: Formato completoUsuario Salientecherjo@cherjo.comImportante: Formato completo3️⃣ Ajuste Final de PermisosUna vez configurada la cuenta, ejecutamos estos comandos para asegurar que el usuario tenga propiedad total sobre su buzón y evitar errores de lectura (bandeja vacía).Bash# Aseguramos que el usuario sea dueño de su carpeta de correo
-# (Cambia 'cherjo' por tu usuario)
+# Aseguramos que el usuario es el propietario legal del buzón
 sudo chown -R cherjo:cherjo /home/cherjo/Maildir
-
-# Restringimos permisos (Solo el dueño puede leer/escribir)
 sudo chmod -R 700 /home/cherjo/Maildir
+```
+
+---
+### ✅ Paso 4: Verificación y Prueba de Envío
+
+Para comprobar que el flujo de datos es correcto, realizamos una prueba de envío y recepción. El proceso técnico es el siguiente:
+1.  **Envío (SMTP):** El correo sale por el puerto **25** hacia Postfix.
+2.  **Almacenamiento:** Postfix lo deposita en la carpeta `Maildir`.
+3.  **Recepción (IMAP):** Dovecot detecta el nuevo archivo y lo sirve por el puerto **143** a la interfaz de Thunderbird.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/bd4a7533-333e-482d-984e-091da72ca734" width="600">
+  <br><i>Éxito: Recepción del "Correo de Prueba" en la Inbox de cherjo@cherjo.com.</i>
+</div>
+
+**Resultado:** El sistema es 100% operativo. Hemos logrado que un mensaje viaje a través de toda nuestra arquitectura de red y sea visualizado correctamente en el cliente gráfico.
